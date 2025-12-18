@@ -1,0 +1,4 @@
+#!/bin/awk -f
+{
+  patterns
+}
