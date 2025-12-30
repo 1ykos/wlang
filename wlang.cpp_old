@@ -1,0 +1,305 @@
+#include "ordered_patch_map.hpp"
+#include "readline/history.h"
+#include "readline/readline.h"
+#include "wmath"
+#include <iostream>
+#include <string>
+#include <vector>
+
+using std::cerr;
+using std::cin;
+using std::cout;
+using std::endl;
+using std::string;
+using std::substr;
+using std::vector;
+using wmath::ordered_patch_map;
+
+
+struct node{
+  size_t n = 0;
+  size_t* data = nullptr;
+  friend bool operator==(const node& a,const node& b) {
+    if (a.n!=b.n) return false;
+    for (size_t i=0;i!=a.n;++i) if (a.data[i]!=b.data[i]) return false;
+    return true;
+  }
+  friend bool operator< (const node& a,const node& b) {
+    if (a.n<b.n) return true;
+    for (size_t i=0;i!=a.n;++i) {
+      if (a.data[i] <b.data[i]) return true;
+      if (a.data[i] >b.data[i]) return false;
+    }
+  }
+};
+
+template<>
+struct wmath::hash_functor<node>{
+  typedef typename false_type::type is_injective;
+  size_t operator()(const node& n) {
+    size_t h(0);
+    for (size_t i=0;i!=p.n;++i) h^=wmath::distribute(n.data[i]);
+    return h;
+  }
+};
+
+struct pattern{
+  size_t n_capture;
+  size_t * capture;
+  size_t n_replace;
+  size_t * replace;
+  ordered_patch_map<node,size_t> scope;
+  pattern(): n_capture(0), capture(nullptr), n_replace(0), replace(nullptr) {
+  };
+  pattern(
+      size_t& n_capture,size_t* capture,
+      size_t& n_replace,size_t* replace,
+      ordered_patch_map<node,size_t> scope;
+      ):
+    n_capture(n_capture), capture(capture),
+    n_replace(n_replace), replace(replace),
+    scope(scope) {};
+  template<iterator0,iterator1,iterator2>
+  pattern(
+      iterator0 capture_begin,iterator0 capture_end,
+      iterator1 replace_begin,iterator1 replace_end,
+      iterator2 scope_begin,  iterator2 scope_end 
+      ){
+    size_t i;
+    capture = new size_t[capture_end-capture_begin];
+    i = 0;
+    for (auto it = capture_begin;it!=capture_end;(++i,++it)) capture[i] = *it;
+    replace = new size_t[replace_end-replace_begin];
+    i = 0;
+    for (auto it = replace_begin;it!=replace_end;(++i,++it)) replace[i] = *it;
+    scope(scope_begin,scope_end);
+  }
+  friend bool operator==(const pattern& a,const pattern& b){
+    if (a.n_capture!=b.n_capture)     return false;
+    // TODO traverse syntax tree of replace
+    if (a.n_replace!=b.n_replace)     return false;
+    for (size_t i=0;i!=a.n_capture;++i)
+      if (a.capture[i]!=b.capture[i]) return false;
+    for (size_t i=0;i!=a.n_replace;++i)
+      if (a.replace[i]=!b.replace[i]) return false;
+    return true;
+  }
+  friend bool operator <(const pattern& a,const pattern& b){
+    if (a.n_capture<b.n_capture)      return true;
+    if (a.n_capture>b.n_capture)      return false;
+    // TODO traverse syntax tree of replace
+    if (a.n_replace<b.n_replace)      return true;
+    if (a.n_replace>b.n_replace)      return false;
+    for (size_t i=0;i!=a.n_replace) {
+      if (a.replace[i]<b.replace[i])  return true;
+      if (a.replace[i]>b.replace[i])  return false;
+    }
+    for (size_t i=0;i!=a.n_capture) {
+      if (a.capture[i]<b.capture[i])  return true;
+      if (a.capture[i]>b.capture[i])  return false;
+    }
+  }
+  ~pattern(){
+    delete[] capture;
+    delete[] replace;
+  }
+};
+
+template<>
+struct wmath::hash_functor<pattern>{
+  typedef typename false_type::type is_injective;
+  size_t operator()(const pattern& p) const {
+    size_t h(0);
+    for (size_t i=0;i!=p.n_capture;++i) h^=wmath::distribute(p.capture[i]);
+    for (size_t i=0;i!=p.n_replace;++i) h^=wmath::distribute(p.replace[i]);
+  }
+};
+
+
+/* Syntax:
+ * ()  parenteses for ast branching
+ * any string of characters separated by either parentheses or whitespaces are
+ * function names
+ *
+ * [ arg0 arg1 ... argn -> function_body ]
+ * -> grabs everything on the left until () or the end of the string and
+ *  threats it as parameters, which will be replaced by the function body which
+ *  itself is an expression composed of other syntax elements and the
+ *  parameters.
+ *
+ * every syntax element is either a pattern or a sequence of patterns
+ */
+
+vector<size_t> parse_capture(
+          char*& beg,
+    const char*& end,
+    ordered_patch_map<size_t,string>& id_name,
+    ordered_patch_map<string,size_t>& name_id,
+    ordered_patch_map<string,size_t>& local_context
+    ){
+  vector<size_t> capture;
+  size_t n_capture = 0;
+  string word;
+  for (const char* it=beg;it!=end;++it) {
+    if (isalnum(*it)) {
+      word.push_back(*it);
+      continue;
+    }
+    if (word.size()) {
+      capture.push_back(
+          local_context.count(word)?
+          local_context.at(word):
+          local_context[word]=n_capture++);
+      word.clear();
+    }
+    if (*it=='='||(*it==']') return capture;
+  }
+}
+
+pattern inline parse_pattern(
+    const char*& beg,
+    const char*& end,
+    ordered_patch_map<size_t,string>& id_name,
+    ordered_patch_map<string,size_t>& name_id
+    ){
+  pattern p;
+  char* it = beg+1; // first character needs to be '['
+  ordered_patch_map<string,size_t>& local_context;
+  const auto capture = parse_capture(it,end,id_name,name_id,local_context);
+  const auto replace = parse_replace(it,end,id_name,name_id,local_context);
+
+}
+size_t inline parse_replace();
+  // replace symbol >= ror(size_t(1),1);
+}
+size_t inline parse_capture(){}
+size_t inline parse_symbol(){}
+size_t inline parse_
+
+size_t inline parse(
+    char* s,
+    const size_t& beg,
+    const size_t& end,
+    ordered_patch_map<node,size_t>& node_id,
+    vector<node>& id_node,
+    ordered_patch_map<size_t,pattern>& id_pattern,
+    ordered_patch_map<string,size_t>& name_id,
+    ordered_patch_map<size_t,string>& id_name,
+    vector<size_t>& reuse_id,
+    size_t& next_id
+    ){
+  vector<size_t> level;
+  size_t i = beg;
+main_parse_loop:
+  if (i>=end)  goto end_main_parse_loop;
+  if (s[i]==0) goto end_main_parse_loop;
+  if (s[i]=='(') {
+    ++i;
+    goto scan_bracket;
+  }
+  if (s[i]=='[') {
+    ++i;
+    goto scan_pattern;
+  }
+  if (s[i]==')') {
+    cerr << "too many closing brackets at " << i << endl;
+    return ~size_t(0);
+  }
+  if (s[i]==']') {
+    cerr << "expected [ before ] at " << i << endl;
+    return ~size_t(0);
+  }
+  if (isspace(s[i])) {
+    ++i;
+    goto main_parse_loop;
+  }
+  for (size_t j=i;(j<end)&&s[j];++j) {
+    if (isspace(s[j])
+      ||(s[j]=='(')
+      ||(s[j]==')')
+      ||(s[j]=='[')
+      ||(s[j]==']')) {
+      string name(&s[i],&s[j]);
+      size_t id;
+      if (name_id.count(name)==0) {
+        if (reuse.size()) {
+          id = reuse.back();
+          reuse.pop_back();
+        } else {
+          id = next_id++;
+        }
+        name_id[name] = id;
+        id_name[id] = name;
+      } else {
+        id = name_id.at(name);
+      }
+      level.push_back(id);
+      i = j;
+      goto main_parse_loop;
+    }
+  }
+  goto main_parse_loop;
+scan_bracket:
+  size_t n = 1;
+  for (size_t j=i;(j<end)&&s[j];++j) {
+    if (is_opening_bracket(s[j])) {
+      ++n;
+      continue;
+    }
+    if (is_closing_bracket(s[j])) {
+      if (--n) continue;
+      const string id = parse(
+          s,
+          i,
+          j,
+          node_id,
+          id_node,
+          id_pattern,
+          name_id,
+          id_name,
+          reuse_id,
+          next_id);
+      level.push_back(id);
+      string name(&s[i],&s[j]);
+      id_name[id] = name;
+      name_id[name] = id;
+      i = j+1;
+      goto main_parse_loop;
+    }
+  }
+  cerr << "expected ) at " << i << endl;
+  return ~size_t(0);
+scan_pattern:
+  {
+    ordered_patch_map<string,size_t> args;
+    for (size_t j=i;(j<end)&&s[j];++j) {
+      if (
+    }
+  }
+end_main_parse_loop:
+  node l;
+  l.n = level.size();
+  l.data = new size_t[l.n];
+  for (size_t i=0;i!=l.n;++i) l.data[i]=level[i];
+}
+
+
+const string eval(char* s)
+{
+  ordered_patch_map<node,size_t> node_uniq;
+  ordered_patch_map<size_t,node> uniq_node;
+  ordered_patch_map<size_t,pattern> patterns;
+  
+}
+
+int main(){
+  char *cline;
+  while ((cline = readline("> ")) != nullptr) {
+      //cout << "[" << line << "]" << endl;
+      if (*cline) add_history(cline);
+      else continue;
+      cout << eval(cline) << endl;
+      free(cline);
+  }
+  return 0;
+}
